@@ -64,3 +64,4 @@ sequenceDiagram
     AiApi-->>Gateway: 200 OK
     Gateway-->>Student: 200 OK (Hiển thị câu trả lời + Link trích dẫn nguồn)
 ```
+

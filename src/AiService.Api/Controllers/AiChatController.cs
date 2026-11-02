@@ -64,15 +64,23 @@ public class AiChatController : ControllerBase
     }
 
     /// <summary>
-    /// Ingest or re-index RAG documents from directory (e.g. C:\Users\vinhmt\Downloads\RAG).
+    /// Ingest or re-index RAG documents from directory.
     /// </summary>
     [HttpPost("rag/ingest")]
     [ProducesResponseType(typeof(RagIngestionResult), StatusCodes.Status200OK)]
     public async Task<IActionResult> Ingest([FromBody] IngestRagRequest? request, CancellationToken cancellationToken = default)
     {
         var targetDir = request?.DirectoryPath 
+            ?? _configuration["Rag:DataDirectory"]
             ?? _configuration["Rag:DefaultDirectory"] 
-            ?? @"C:\Users\vinhmt\Downloads\RAG";
+            ?? "data/rag";
+
+        if (!Path.IsPathRooted(targetDir))
+        {
+            var baseDirCandidate = Path.Combine(AppContext.BaseDirectory, targetDir);
+            var currentDirCandidate = Path.Combine(Directory.GetCurrentDirectory(), targetDir);
+            targetDir = Directory.Exists(baseDirCandidate) ? baseDirCandidate : currentDirCandidate;
+        }
 
         var forceReindex = request?.ForceReindex ?? false;
         var result = await _ragIngestionService.IngestDocumentsFromDirectoryAsync(targetDir, forceReindex, cancellationToken);

@@ -57,7 +57,7 @@ erDiagram
     "Model": "gemini-1.5-flash"
   },
   "Rag": {
-    "DefaultDirectory": "C:\\Users\\vinhmt\\Downloads\\RAG",
+    "DataDirectory": "data/rag",
     "MaxCitations": 5
   }
 }

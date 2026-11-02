@@ -78,3 +78,4 @@ erDiagram
 2. **RagChunks(DocumentId, ChunkIndex)**: Đảm bảo thứ tự xuất hiện của các đoạn nội dung trong tài liệu gốc.
 3. **AiMessages(ConversationId, CreatedAtUtc ASC)**: Truy xuất toàn bộ lịch sử ngữ cảnh đa lượt (Multi-turn Context) với độ trễ thấp nhất.
 4. **MentorProfiles(Major, IsAvailableForMentoring)**: Phục vụ truy vấn gợi ý cố vấn theo chuyên ngành sinh viên.
+

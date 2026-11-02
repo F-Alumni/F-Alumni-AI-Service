@@ -239,8 +239,16 @@ public class AiServiceTests
     [Fact]
     public async Task RagIngestion_RealDirectory_Ingests_And_Queries_Correctly()
     {
-        var ragDir = @"C:\Users\vinhmt\Downloads\RAG";
-        if (!Directory.Exists(ragDir)) return;
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "data", "rag"),
+            Path.Combine(Directory.GetCurrentDirectory(), "data", "rag"),
+            Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..", "..", "data", "rag"),
+            Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "..", "data", "rag")
+        };
+
+        var ragDir = candidates.FirstOrDefault(d => Directory.Exists(d) && Directory.GetFiles(d, "*.docx", SearchOption.AllDirectories).Length > 0);
+        Assert.True(!string.IsNullOrEmpty(ragDir) && Directory.Exists(ragDir), "Thư mục tài liệu RAG data/rag phải tồn tại và chứa file .docx");
 
         var repo = new FakeRagRepository();
         var ingestionService = new RagIngestionService(repo, NullLogger<RagIngestionService>.Instance);
