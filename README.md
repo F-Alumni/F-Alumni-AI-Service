@@ -1,125 +1,102 @@
-﻿# 📦 Layered ASP.NET Core .NET 10 Service AiService
+# FPT Alumni Connect — AI Service (`f-alumni-ai-service`)
 
-> Mẫu khung dự án backend chuẩn dành cho các Microservices thuộc dự án **FPT Alumni Connect** (PRN232).
+Dịch vụ Trí tuệ Nhân tạo & Cố vấn Học tập thuộc hệ thống **FPT Alumni Connect** (PRN232 Final Assignment). Được xây dựng theo chuẩn kiến trúc 3 tầng `.NET 10` (`Api -> Services -> Repositories`), ứng dụng kỹ thuật **Retrieval-Augmented Generation (RAG)** kết hợp tìm kiếm ngữ nghĩa, trích dẫn nguồn thực tế, quản lý hội thoại đa lượt, tích hợp Google Gemini API linh hoạt và thuật toán gợi ý cố vấn (Mentor Recommendation).
+
+- **Owner**: Vinh (`vinhmt` — Backend 2)
+- **Cổng dịch vụ (Service Port)**: `http://localhost:5004` (Cổng HTTPS: `https://localhost:7004`)
+- **Database**: `FAlumni_AiService_Db` (Độc lập 100% — Zero Cross-Database Foreign Keys)
+- **Tài liệu ERD Database**: [`docs/ERD.md`](docs/ERD.md)
+- **Tài liệu Kiến trúc Hệ thống**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | [`docs/architecture/f-alumni-be2-architecture.svg`](docs/architecture/f-alumni-be2-architecture.svg)
 
 ---
 
-## 🏛️ Cấu trúc Kiến trúc (Layered Architecture)
+## 🗄️ Sơ Đồ ERD Cơ Sở Dữ Liệu (`FAlumni_AiService_Db`)
 
-AiService áp dụng mô hình 3 tầng phân lớp rõ ràng:
-
-```text
-AiService.Api (REST API, Controllers, Middleware, Health, OpenAPI)
-    │
-    ▼ (Reference duy nhất)
-AiService.Services (Business Logic, Validation, DTOs, Exceptions)
-    │
-    ▼ (Reference duy nhất)
-AiService.Repositories (Data Access, EF Core SqlServer, Migrations, Entities)
+```mermaid
+erDiagram
+    RagDocuments ||--o{ RagChunks : "1:N (DocumentId, Cascade)"
+    AiConversations ||--o{ AiMessages : "1:N (ConversationId, Cascade)"
 ```
 
-> ⚠️ **Quy tắc bất di bất dịch**: `AiService.Api` không được reference hay inject bất kỳ Repository nào trực tiếp. Mọi truy vấn và nghiệp vụ phải đi qua tầng `AiService.Services`.
+> Xem đặc tả chi tiết từng bảng, kiểu dữ liệu và chỉ mục tại [`docs/ERD.md`](docs/ERD.md).
 
 ---
 
-## 🗄️ Cơ sở Dữ liệu & EF Core Migrations
+## 🚀 Toàn Bộ Tính Năng & User Stories Đã Hoàn Thành (AI-01 đến AI-04 + RAG + Mentor)
 
-- **Provider**: Microsoft SQL Server (`Microsoft.EntityFrameworkCore.SqlServer`).
-- **Tên Database mặc định**: `FAlumni_AiService_Db` (trên instance `localhost\SQLEXPRESS` hoặc Docker SQL Server).
-- **Cấu hình chuỗi kết nối**: Trong `src/AiService.Api/appsettings.json`:
-  ```json
+| Mã US | Tên tính năng & Nghiệp vụ chi tiết | Phương thức HTTP | Đường dẫn Endpoint | Xác thực (Auth) |
+| :--- | :--- | :--- | :--- | :--- |
+| **AI-01** | Hỏi đáp AI về kinh nghiệm học tập, chương trình đào tạo môn học FPTU | `POST` | `/api/v1/ai/chat` | Bearer JWT |
+| **AI-02** | Trả lời chính xác dựa trên tài liệu thực tế cộng đồng FPTU (Grounded RAG, chống lan man hallucination) | `POST` | `/api/v1/ai/chat` | Bearer JWT |
+| **AI-03** | Trích dẫn nguồn tài liệu tham khảo (`citations: [{ documentTitle, section, snippet }]`) để kiểm chứng | `POST` | `/api/v1/ai/chat` (Payload trả về) | Bearer JWT |
+| **AI-04** | Tiếp tục đặt câu hỏi trong cùng một phiên hội thoại đa lượt (Multi-turn Context qua `conversationId`) | `POST` | `/api/v1/ai/chat` (`conversationId: Guid?`) | Bearer JWT |
+| **Mentor** | Gợi ý cựu sinh viên cố vấn theo chuyên ngành, từ khóa kỹ năng và campus | `POST` | `/api/v1/ai/mentors/recommend` | Public / Optional |
+| **Lịch sử** | Xem danh sách các cuộc trò chuyện và chi tiết từng phiên hội thoại | `GET` | `/api/v1/ai/conversations`<br>`/api/v1/ai/conversations/{id}` | Bearer JWT |
+| **Nạp RAG** | Nạp và đánh chỉ mục tài liệu từ thư mục Word `.docx` (Tự động chạy khi khởi động) | `POST` | `/api/v1/ai/rag/ingest` | Admin (hoặc nội bộ) |
+
+---
+
+## ⚙️ Cấu Hình Khóa Bí Mật & Thay Đổi Model LLM (Không Hardcode Trong Code)
+
+> 💡 **Khẳng định bảo mật**: Toàn bộ source code C# **tuyệt đối không hardcode API Key, Model name hay chuỗi bí mật**. Mọi giá trị đều được inject qua `IConfiguration` theo thứ tự ưu tiên: `Environment Variables` > `appsettings.json` > `User Secrets`.
+
+```json
+// src/AiService.Api/appsettings.json
+{
   "ConnectionStrings": {
     "DefaultConnection": "Server=localhost\\SQLEXPRESS;Database=FAlumni_AiService_Db;Trusted_Connection=True;TrustServerCertificate=True;"
+  },
+  "Jwt": {
+    "Issuer": "https://identity.falumni.local",
+    "Audience": "falumni-services",
+    "Key": "",
+    "ClockSkewMinutes": 1
+  },
+  "Gemini": {
+    "ApiKey": "",
+    "Model": "gemini-1.5-flash"
+  },
+  "Rag": {
+    "DefaultDirectory": "C:\\Users\\vinhmt\\Downloads\\RAG",
+    "MaxCitations": 5
   }
-  ```
-
-### Các lệnh EF Core thông dụng:
-
-```bash
-# 1. Liệt kê các migration hiện có
-dotnet ef migrations list --project src/AiService.Repositories --startup-project src/AiService.Api
-
-# 2. Tạo migration mới khi có thay đổi Entity/Fluent API
-dotnet ef migrations add <MigrationName> --project src/AiService.Repositories --startup-project src/AiService.Api
-
-# 3. Áp dụng migration vào SQL Server
-dotnet ef database update --project src/AiService.Repositories --startup-project src/AiService.Api
-
-# 4. Sinh file script SQL lũy đẳng để nộp bài hoặc triển khai
-dotnet ef migrations script --idempotent --output migrations.sql --project src/AiService.Repositories --startup-project src/AiService.Api
+}
 ```
 
----
-
-## 🚀 Hướng dẫn Sử dụng Nhanh (Quickstart)
-
-### 1. Khôi phục packages & Biên dịch dự án
-```bash
-# Khôi phục dependencies
-dotnet restore
-
-# Biên dịch toàn bộ Solution
-dotnet build
-```
-
-### 2. Chạy Kiểm thử (xUnit Unit & Integration Tests)
-```bash
-# 2.1 Chạy toàn bộ kiểm thử đơn vị & API integration với EF Core InMemory (36 tests passed)
-dotnet test
-
-# 2.2 Chạy thêm kiểm thử tích hợp thực tế với SQL Server (FptAlumni_Guideline_Test_Db) (43 tests passed)
-$env:RUN_SQLSERVER_TESTS = "true"
-dotnet test
-
-# 2.3 Chỉ chạy riêng các bài kiểm thử SQL Server Integration
-dotnet test --filter "Category=SqlServerIntegration"
-```
-
-### 3. Khởi chạy Web API cục bộ
-Trước khi khởi chạy, cần cung cấp khóa bí mật ký JWT (`Jwt:Key`). Nhằm tuân thủ bảo mật, khóa này **không được lưu cứng** trong `appsettings.json` và tuyệt đối **không tái sử dụng bất kỳ chuỗi khóa mẫu nào trong lịch sử Git** (các chuỗi đã commit phải coi là đã bị lộ).
-
-Hãy tự sinh một khóa bí mật ngẫu nhiên chuẩn mã hóa (256 bits / 32 bytes) thông qua một trong hai cách sau:
-- **Cách 1: Sinh ngẫu nhiên và gán biến môi trường (PowerShell)**:
+### 1. Cách Thay Đổi Model AI (Không Cần Sửa Code C#)
+Khi Google cập nhật model mới hoặc bạn muốn chuyển đổi model, chỉ cần đổi giá trị trong `appsettings.json` hoặc truyền biến môi trường:
+- Đổi sang Gemini 2.0 Flash: sửa `"Model": "gemini-2.0-flash"`
+- Đổi sang Gemini 1.5 Pro: sửa `"Model": "gemini-1.5-pro"`
+- Hoặc đặt biến môi trường:
   ```powershell
-  $bytes = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); $randomKey = [Convert]::ToBase64String($bytes)
-  $env:Jwt__Key = $randomKey
-  dotnet run --project src/AiService.Api/AiService.Api.csproj
+  $env:Gemini__Model = "gemini-2.0-flash"
   ```
-- **Cách 2: Sử dụng .NET User Secrets (khuyên dùng khi phát triển máy cá nhân)**:
+
+### 2. Cách Điền API Key Gemini
+- **Cách 1 (Biến môi trường - Khuyên dùng)**:
   ```powershell
-  dotnet user-secrets init --project src/AiService.Api
-  $bytes = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); $randomKey = [Convert]::ToBase64String($bytes)
-  dotnet user-secrets set "Jwt:Key" $randomKey --project src/AiService.Api
-  dotnet run --project src/AiService.Api/AiService.Api.csproj
+  $env:GEMINI_API_KEY = "AIzaSy..."
   ```
+- **Cách 2 (.NET User Secrets - Khi phát triển cục bộ)**:
+  ```powershell
+  dotnet user-secrets set "Gemini:ApiKey" "AIzaSy..." --project src/AiService.Api
+  ```
+- **Cách 3 (appsettings.json)**: Điền trực tiếp vào `Gemini.ApiKey`.
 
-> 💡 **Lưu ý**: Khóa JWT phải có độ dài tối thiểu **32 bytes / 256 bits** (chuẩn HMAC-SHA256; chuỗi Base64 32 bytes có độ dài 44 ký tự đáp ứng hoàn hảo tiêu chuẩn này). Nếu thiếu hoặc quá ngắn, ứng dụng sẽ dừng ngay ở bước khởi động với thông báo lỗi rõ ràng. Đối với kiểm thử tự động (`dotnet test`), test fixture `CustomWebApplicationFactory` tự động nạp khóa kiểm thử giả lập độc lập mà không cần cấu hình thủ công.
-
-Mặc định ứng dụng sẽ lắng nghe trên cổng HTTP: `http://localhost:5000`.
-
----
-
-## 📡 Danh sách Endpoints Mẫu (Sample Endpoints)
-
-| Phương thức | Đường dẫn URL | Mô tả | Mã trạng thái HTTP |
-| :--- | :--- | :--- | :--- |
-| `GET` | `/health` | Kiểm tra tình trạng hoạt động (Health Check) | `200 OK` (`"Healthy"`) |
-| `GET` | `/api/v1/sample-items` | Lấy danh sách toàn bộ các items (Public) | `200 OK` (JSON List) |
-| `GET` | `/api/v1/sample-items/paged` | Lấy danh sách có phân trang (`pageNumber`, `pageSize`) và tìm kiếm | `200 OK` (`PagedResponse<T>`) |
-| `GET` | `/api/v1/sample-items/{id}` | Lấy chi tiết 1 item theo GUID (Public) | `200 OK` hoặc `404 Not Found` |
-| `POST` | `/api/v1/sample-items` | Tạo mới 1 sample item (USER/ADMIN role) | `201 Created` (Kèm Location header) |
-| `PUT` | `/api/v1/sample-items/{id}` | Cập nhật toàn bộ thông tin 1 item theo GUID (USER/ADMIN role) | `200 OK` hoặc `404 Not Found` |
-| `DELETE` | `/api/v1/sample-items/{id}` | Xóa 1 sample item theo GUID (ADMIN role) | `204 NoContent` hoặc `404 Not Found` |
+> 🛡️ **Cơ chế Fallback thông minh (Zero-Downtime Guarantee)**:  
+> Nếu bạn **không cung cấp API Key**, hoặc gặp lỗi kết nối internet/hết quota Google, AI Service **không bị sập hay báo lỗi**. Hệ thống tự động chuyển sang **Local Grounded Synthesizer**, sử dụng trực tiếp trích đoạn tri thức FPTU đã lập chỉ mục để tạo câu trả lời chính xác, kèm danh sách nguồn trích dẫn đầy đủ.
 
 ---
 
-## 🛠️ Hướng dẫn Sao chép cho Service Mới
+## 🛠️ Hướng Dẫn Chạy & Kiểm Thử Tự Động
 
-Khi bắt đầu một service mới trong danh sách (`f-alumni-user-service`, `f-alumni-chat-service`, v.v.):
+```powershell
+# 1. Xác minh tính toàn vẹn hợp đồng SHA-256
+.\scripts\verify-contracts.ps1
 
-1. Copy toàn bộ nội dung thư mục này vào thư mục repository của service.
-2. Đổi tên solution `AiService.sln` thành `FAlumni.<ServiceName>.sln`.
-3. Đổi tên các thư mục `src/AiService.*` thành `src/FAlumni.<ServiceName>.*`.
-4. Tìm và thay thế chuỗi `AiService` thành `FAlumni.<ServiceName>` trong tất cả các file `.csproj` và `.cs`.
-5. Cập nhật tên Database trong `appsettings.json` thành `FAlumni_<ServiceName>_Db` (xem [docs/05-database.md](file:///c:/Use/University/PRN232/ASM/guideline/docs/05-database.md)).
-6. Chạy `dotnet test` để đảm bảo hệ thống biên dịch và chạy kiểm thử thành công trước khi bắt đầu viết code nghiệp vụ.
+# 2. Chạy toàn bộ 40 Unit & Integration Tests (Bao gồm test nạp dữ liệu Word thực tế)
+dotnet test AiService.sln --configuration Release
+
+# 3. Khởi chạy dịch vụ cục bộ trên cổng 5004
+dotnet run --project src/AiService.Api/AiService.Api.csproj
+```
