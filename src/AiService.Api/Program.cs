@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using AiService.Api.Data;
 using AiService.Api.Middlewares;
 using AiService.Api.Workers;
 using AiService.Services.Extensions;
@@ -103,6 +104,9 @@ app.MapHealthChecks("/health");
 
 // Map API Controllers
 app.MapControllers();
+
+// Seed AI database with test fixtures (Mentors, RAG documents, initial conversations)
+await AiDatabaseSeeder.SeedAsync(app.Services);
 
 app.Run();
 
