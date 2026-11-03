@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
 namespace AiService.Repositories.Context;
@@ -21,7 +21,7 @@ public class AiServiceDbContextFactory : IDesignTimeDbContextFactory<AiServiceDb
             ? args[0]
             : (Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
                 ?? Environment.GetEnvironmentVariable("SQLSERVER_CONNECTION_STRING")
-                ?? "Server=localhost\\SQLEXPRESS;Database=FAlumni_AiService_Db;Trusted_Connection=True;TrustServerCertificate=True;");
+                ?? "Server=localhost\\SQLEXPRESS;Database=FAlumni_AI_Db;Trusted_Connection=True;TrustServerCertificate=True;");
 
         optionsBuilder.UseSqlServer(connectionString);
 
