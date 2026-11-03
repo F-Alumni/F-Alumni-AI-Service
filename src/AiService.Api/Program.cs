@@ -77,8 +77,9 @@ builder.Services.AddAuthorization(options =>
 // 4. Add Application Layer (Services & Repositories)
 builder.Services.AddApplicationServices(builder.Configuration);
 
-// 5. Add Background RAG Ingestion Worker
+// 5. Add Background RAG Ingestion Worker & Kafka Consumer
 builder.Services.AddHostedService<RagStartupWorker>();
+builder.Services.AddHostedService<PostCreatedConsumerWorker>();
 
 var app = builder.Build();
 
