@@ -30,6 +30,7 @@ public class IngestRagRequest
 public class BoostTestRequest
 {
     public string Query { get; set; } = string.Empty;
+    public string? Q { get; set; }
     public string? ProgramCode { get; set; }
     public string? Major { get; set; }
     public string? Campus { get; set; } = "All";

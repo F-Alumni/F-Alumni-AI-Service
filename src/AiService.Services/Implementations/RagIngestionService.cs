@@ -103,22 +103,28 @@ public class RagIngestionService : IRagIngestionService
         var sourcePath = $"forum/post/{postId}";
         await _ragRepository.DeleteDocumentByPathAsync(sourcePath, cancellationToken);
 
+        var docTitle = $"[Forum Post] {title}";
+        if (docTitle.Length > 300) docTitle = docTitle[..300];
+        var safeMajor = string.IsNullOrWhiteSpace(major) ? null : (major.Length > 50 ? major[..50] : major);
+        var safeCampus = string.IsNullOrWhiteSpace(campus) ? "All" : (campus.Length > 50 ? campus[..50] : campus);
+
         var doc = new RagDocument
         {
-            Title = $"[Forum Post] {title}",
-            SourcePath = sourcePath,
+            Title = docTitle,
+            SourcePath = sourcePath.Length > 500 ? sourcePath[..500] : sourcePath,
             DocumentType = "ForumPost",
-            ProgramCode = major,
-            Campus = campus,
+            ProgramCode = safeMajor,
+            Campus = safeCampus,
             CreatedAt = DateTime.UtcNow
         };
 
         var savedDoc = await _ragRepository.AddDocumentAsync(doc, cancellationToken);
 
+        var chunkId = $"post_{postId}";
         var chunk = new RagChunk
         {
             DocumentId = savedDoc.Id,
-            ChunkIdentifier = $"post_{postId}",
+            ChunkIdentifier = chunkId.Length > 150 ? chunkId[..150] : chunkId,
             Section = "Kinh nghiệm từ cộng đồng FPTU",
             Content = $"Tác giả: {authorName}\nChuyên ngành: {major} | Cơ sở: {campus}\nTiêu đề: {title}\nNội dung: {content}",
             Keywords = $"{title} {major} {campus} {authorName}"
@@ -186,7 +192,7 @@ public class RagIngestionService : IRagIngestionService
                         chunks.Add(new RagChunk
                         {
                             DocumentId = doc.Id,
-                            ChunkIdentifier = id,
+                            ChunkIdentifier = id.Length > 150 ? id[..150] : id,
                             Section = section.Length > 300 ? section[..300] : section,
                             Content = chunkText.Trim(),
                             Keywords = $"{doc.Title} {doc.ProgramCode} {shortCode} {section}".Trim()
@@ -228,6 +234,10 @@ public class RagIngestionService : IRagIngestionService
             if (subDocLines.Length > 0 && subDocLines[0].StartsWith("DOCUMENT:", StringComparison.OrdinalIgnoreCase))
             {
                 subDocTitle = subDocLines[0]["DOCUMENT:".Length..].Trim();
+                if (string.IsNullOrWhiteSpace(subDocTitle) && subDocLines.Length > 1 && !subDocLines[1].StartsWith("<<<SECTION>>>"))
+                {
+                    subDocTitle = subDocLines[1].Trim();
+                }
             }
 
             var sections = Regex.Split(subDoc, @"(?=<<<SECTION>>>)")
@@ -259,9 +269,15 @@ public class RagIngestionService : IRagIngestionService
                     if (lines.Length > 0)
                     {
                         var first = lines[0].Replace("DOCUMENT:", "").Trim();
+                        if (string.IsNullOrWhiteSpace(first) && lines.Length > 1)
+                        {
+                            first = lines[1].Trim();
+                        }
                         if (!string.IsNullOrWhiteSpace(first))
                         {
-                            sectionTitle = first.Length > 150 ? first[..150] : first;
+                            sectionTitle = first.StartsWith("Liên kết một số tên gọi", StringComparison.OrdinalIgnoreCase)
+                                ? "Thuật ngữ & Biệt danh cơ sở FPTU (Hola, Xavalo, Hovilo, Fuda)"
+                                : (first.Length > 150 ? first[..150] : first);
                         }
                     }
                 }
@@ -386,7 +402,7 @@ public class RagIngestionService : IRagIngestionService
         if (fileName.Contains("Học phí", StringComparison.OrdinalIgnoreCase)) return "Tuition";
         if (fileName.Contains("vật chất", StringComparison.OrdinalIgnoreCase)) return "Facilities";
         if (fileName.Contains("năm nhất", StringComparison.OrdinalIgnoreCase)) return "FirstYearSubjects";
-        if (fileName.Contains("thông tin khác", StringComparison.OrdinalIgnoreCase)) return "Slang";
+        if (fileName.Contains("thông tin khác", StringComparison.OrdinalIgnoreCase)) return "Regulations";
         if (fullPath.Contains("Curriculum", StringComparison.OrdinalIgnoreCase) ||
             fileName.StartsWith("BIT_", StringComparison.OrdinalIgnoreCase) ||
             fileName.StartsWith("BBA_", StringComparison.OrdinalIgnoreCase) ||

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using AiService.Repositories.Entities;
@@ -61,12 +62,21 @@ public class AiChatService : IAiChatService
         var resolvedMajor = request.Major;
         var enrichedQuery = request.Question;
 
+        if (string.IsNullOrWhiteSpace(resolvedMajor) || resolvedMajor.Equals("All", StringComparison.OrdinalIgnoreCase))
+        {
+            var currentInferred = InferMajorFromText(request.Question);
+            if (!string.IsNullOrEmpty(currentInferred))
+            {
+                resolvedMajor = currentInferred;
+            }
+        }
+
         if (conversation.Messages.Count > 0)
         {
-            var lastUserMsg = conversation.Messages.LastOrDefault(m => m.Role == "user");
+            var lastUserMsg = conversation.Messages.OrderBy(m => m.CreatedAt).LastOrDefault(m => m.Role == "user");
             if (lastUserMsg != null)
             {
-                if ((string.IsNullOrWhiteSpace(resolvedMajor) || resolvedMajor.Equals("All", StringComparison.OrdinalIgnoreCase)))
+                if (string.IsNullOrWhiteSpace(resolvedMajor) || resolvedMajor.Equals("All", StringComparison.OrdinalIgnoreCase))
                 {
                     var inferred = InferMajorFromText(lastUserMsg.Content);
                     if (!string.IsNullOrEmpty(inferred))
@@ -75,14 +85,17 @@ public class AiChatService : IAiChatService
                     }
                 }
 
-                // If follow-up question refers back to previous topic
-                var qLower = request.Question.ToLowerInvariant();
-                if (qLower.Contains("ngành này") || qLower.Contains("nganh nay") ||
-                    qLower.Contains("môn này") || qLower.Contains("mon nay") ||
-                    qLower.Contains("thế còn") || qLower.Contains("the con") ||
-                    qLower.Contains("vậy còn") || qLower.Contains("vay con") ||
-                    qLower.Contains("ở đâu") || qLower.Contains("o dau") ||
-                    qLower.Contains("mấy tín") || qLower.Contains("bao nhiêu tín"))
+                // If follow-up question refers back to previous topic without its own primary topic
+                var qFlat = RagSearchService.RemoveDiacritics(request.Question.ToLowerInvariant());
+                bool hasOwnSpecificTopic = qFlat.Contains("hoc phi") || qFlat.Contains("ky tuc") || qFlat.Contains("ktx") || qFlat.Contains("vovinam") || qFlat.Contains("coursera") || qFlat.Contains("fap");
+                if (!hasOwnSpecificTopic && (
+                    qFlat.Contains("nganh nay") || qFlat.Contains("nganh do") ||
+                    qFlat.Contains("mon nay") || qFlat.Contains("mon do") ||
+                    qFlat.Contains("the con") || qFlat.Contains("vay con") ||
+                    qFlat.Contains("o dau") || qFlat.Contains("may tin") ||
+                    qFlat.Contains("bao nhieu tin") || qFlat.Contains("thi sao") ||
+                    qFlat.Contains("cu the") || qFlat.Contains("chi tiet") ||
+                    qFlat.Contains("dieu kien") || qFlat.Contains("hoc phi cua no")))
                 {
                     enrichedQuery = $"{request.Question} {lastUserMsg.Content}";
                 }
@@ -148,14 +161,16 @@ public class AiChatService : IAiChatService
 
     private static string? InferMajorFromText(string text)
     {
-        var t = text.ToLowerInvariant();
-        if (t.Contains("se") || t.Contains("phần mềm") || t.Contains("software")) return "BIT_SE";
-        if (t.Contains("ai") || t.Contains("trí tuệ nhân tạo")) return "BIT_AI";
-        if (t.Contains("ia") || t.Contains("an toàn thông tin") || t.Contains("bảo mật")) return "BIT_IA";
-        if (t.Contains("gd") || t.Contains("đồ họa") || t.Contains("mỹ thuật số")) return "BIT_GD";
-        if (t.Contains("ib") || t.Contains("kinh doanh quốc tế")) return "BBA_IB";
-        if (t.Contains("mc") || t.Contains("truyền thông")) return "BBA_MC";
-        if (t.Contains("mkt") || t.Contains("marketing")) return "BBA_MKT";
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        var flat = RagSearchService.RemoveDiacritics(text).ToLowerInvariant();
+        if (Regex.IsMatch(flat, @"\b(bit_se|se|ktpm)\b") || flat.Contains("phan mem") || flat.Contains("software")) return "BIT_SE";
+        if (Regex.IsMatch(flat, @"\b(bit_ai)\b") || Regex.IsMatch(text, @"\bAI\b") || flat.Contains("tri tue nhan tao") || flat.Contains("nganh ai") || flat.Contains("chuyen nganh ai")) return "BIT_AI";
+        if (Regex.IsMatch(flat, @"\b(bit_ia|ia|attt)\b") || flat.Contains("an toan thong tin") || flat.Contains("bao mat")) return "BIT_IA";
+        if (Regex.IsMatch(flat, @"\b(bit_gd|gd)\b") || flat.Contains("do hoa") || flat.Contains("my thuat so")) return "BIT_GD";
+        if (Regex.IsMatch(flat, @"\b(bba_ib|ib)\b") || flat.Contains("kinh doanh quoc te")) return "BBA_IB";
+        if (Regex.IsMatch(flat, @"\b(bba_mc|mc)\b") || flat.Contains("truyen thong")) return "BBA_MC";
+        if (Regex.IsMatch(flat, @"\b(bba_mkt|mkt)\b") || flat.Contains("marketing")) return "BBA_MKT";
         return null;
     }
 
@@ -226,14 +241,36 @@ public class AiChatService : IAiChatService
 
             var currentPrompt = $"{systemInstruction}\n\n{sbContext}\n\nCÂU HỎI HIỆN TẠI CỦA NGƯỜI DÙNG: {question}";
 
-            // Multi-turn conversation contents array
+            // Multi-turn conversation contents array (must begin with 'user' and strictly alternate 'user'/'model' for Gemini API)
             var contentsList = new List<object>();
-            var recentHistory = history.TakeLast(6).ToList();
+            var recentHistory = history.OrderBy(m => m.CreatedAt).TakeLast(6).ToList();
+            var alternatingHistory = new List<(string Role, string Content)>();
             foreach (var h in recentHistory)
+            {
+                var role = h.Role == "assistant" ? "model" : "user";
+                if (alternatingHistory.Count == 0)
+                {
+                    if (role != "user") continue;
+                    alternatingHistory.Add((role, h.Content));
+                }
+                else if (alternatingHistory[^1].Role == role)
+                {
+                    alternatingHistory[^1] = (role, alternatingHistory[^1].Content + "\n" + h.Content);
+                }
+                else
+                {
+                    alternatingHistory.Add((role, h.Content));
+                }
+            }
+            while (alternatingHistory.Count > 0 && alternatingHistory[^1].Role != "model")
+            {
+                alternatingHistory.RemoveAt(alternatingHistory.Count - 1);
+            }
+            foreach (var h in alternatingHistory)
             {
                 contentsList.Add(new
                 {
-                    role = h.Role == "assistant" ? "model" : "user",
+                    role = h.Role,
                     parts = new[] { new { text = h.Content } }
                 });
             }

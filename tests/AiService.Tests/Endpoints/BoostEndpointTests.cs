@@ -117,5 +117,60 @@ public class BoostEndpointTests : IClassFixture<CustomWebApplicationFactory>
         Assert.NotNull(emptyBoost);
         Assert.Empty(emptyBoost.DetectedIntents);
         Assert.Empty(emptyBoost.TopResults);
+
+        // 6. Tuition query mentioning a major (without Major param) MUST still rank Tuition #1, not Curriculum
+        var tuitionWithMajorResp = await _client.GetAsync("/boost?q=" + Uri.EscapeDataString("Học phí ngành Kỹ thuật phần mềm tại Hola là bao nhiêu?"));
+        Assert.Equal(HttpStatusCode.OK, tuitionWithMajorResp.StatusCode);
+        var tuitionWithMajor = await tuitionWithMajorResp.Content.ReadFromJsonAsync<RagBoostDiagnosticsResponse>();
+        Assert.NotNull(tuitionWithMajor);
+        Assert.NotEmpty(tuitionWithMajor.TopResults);
+        Assert.Equal("Tuition", tuitionWithMajor.TopResults[0].DocumentType);
+
+        // 7. Unaccented curriculum queries WITHOUT Major param MUST match the exact ProgramCode
+        var aiBoostResp = await _client.GetAsync("/boost?q=" + Uri.EscapeDataString("Ngành trí tuệ nhân tạo học những môn gì?"));
+        Assert.Equal(HttpStatusCode.OK, aiBoostResp.StatusCode);
+        var aiBoost = await aiBoostResp.Content.ReadFromJsonAsync<RagBoostDiagnosticsResponse>();
+        Assert.NotNull(aiBoost);
+        Assert.NotEmpty(aiBoost.TopResults);
+        Assert.Equal("BIT_AI", aiBoost.TopResults[0].ProgramCode);
+        Assert.Contains(aiBoost.DetectedIntents, i => i.StartsWith("Program:BIT_AI"));
+
+        // 8. Facilities, Regulations, and Slang queries via /boost
+        var ktxResp = await _client.GetAsync("/boost?q=" + Uri.EscapeDataString("ky tuc xa ktx o xavalo hcm nhu the nao"));
+        Assert.Equal(HttpStatusCode.OK, ktxResp.StatusCode);
+        var ktxBoost = await ktxResp.Content.ReadFromJsonAsync<RagBoostDiagnosticsResponse>();
+        Assert.NotNull(ktxBoost);
+        Assert.NotEmpty(ktxBoost.TopResults);
+        Assert.Equal("Facilities", ktxBoost.TopResults[0].DocumentType);
+        Assert.Contains(ktxBoost.DetectedIntents, i => i.StartsWith("Campus:FU-HCM"));
+
+        var regResp = await _client.GetAsync("/boost?q=" + Uri.EscapeDataString("Quy định bảo lưu và thi thẩm định Coursera trên FAP"));
+        Assert.Equal(HttpStatusCode.OK, regResp.StatusCode);
+        var regBoost = await regResp.Content.ReadFromJsonAsync<RagBoostDiagnosticsResponse>();
+        Assert.NotNull(regBoost);
+        Assert.NotEmpty(regBoost.TopResults);
+        Assert.Equal("Regulations", regBoost.TopResults[0].DocumentType);
+
+        // 9. Multi-turn chat without explicit Major: Turn 1 infers BIT_AI, Turn 2 switches cleanly to Tuition
+        var turn1Resp = await _client.PostAsJsonAsync("/api/v1/ai/chat", new AiChatRequest
+        {
+            Question = "Ngành AI học bao nhiêu tín chỉ?"
+        });
+        Assert.Equal(HttpStatusCode.OK, turn1Resp.StatusCode);
+        var turn1 = await turn1Resp.Content.ReadFromJsonAsync<AiChatResponse>();
+        Assert.NotNull(turn1);
+        Assert.NotEmpty(turn1.Citations);
+        Assert.Equal("BIT_AI", turn1.Citations[0].ProgramCode);
+
+        var turn2Resp = await _client.PostAsJsonAsync("/api/v1/ai/chat", new AiChatRequest
+        {
+            Question = "Thế còn học phí của ngành này tại Hola?",
+            ConversationId = turn1.ConversationId
+        });
+        Assert.Equal(HttpStatusCode.OK, turn2Resp.StatusCode);
+        var turn2 = await turn2Resp.Content.ReadFromJsonAsync<AiChatResponse>();
+        Assert.NotNull(turn2);
+        Assert.NotEmpty(turn2.Citations);
+        Assert.Contains("Học phí", turn2.Citations[0].SourceTitle);
     }
 }

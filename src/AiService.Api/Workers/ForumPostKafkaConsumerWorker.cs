@@ -23,7 +23,8 @@ public class ForumPostKafkaConsumerWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var bootstrapServers = _configuration["Kafka:BootstrapServers"];
+        var bootstrapServers = _configuration["Kafka:BootstrapServers"]
+            ?? Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
         if (string.IsNullOrWhiteSpace(bootstrapServers))
         {
             _logger.LogInformation("Kafka:BootstrapServers chưa được cấu hình. ForumPostKafkaConsumerWorker ở trạng thái chờ.");
@@ -60,7 +61,9 @@ public class ForumPostKafkaConsumerWorker : BackgroundService
             {
                 try
                 {
-                    var consumeResult = consumer.Consume(TimeSpan.FromMilliseconds(500));
+                    var consumeResult = await Task.Run(
+                        () => consumer.Consume(TimeSpan.FromMilliseconds(500)),
+                        stoppingToken);
                     if (consumeResult == null || string.IsNullOrWhiteSpace(consumeResult.Message?.Value))
                     {
                         await Task.Delay(100, stoppingToken);

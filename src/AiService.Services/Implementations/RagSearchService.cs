@@ -21,7 +21,8 @@ public class RagSearchService : IRagSearchService
         "gi", "gì", "nao", "nào", "sao", "the", "thế", "nhu", "như", "hoi", "hỏi", "ve", "về",
         "trong", "minh", "mình", "xin", "bao", "nhieu", "nhiêu", "may", "mấy", "lam", "làm",
         "nay", "này", "do", "đó", "a", "an", "in", "on", "at", "is", "are", "what", "how",
-        "nha", "nhe", "nhé", "vậy", "vay", "a", "ạ", "ơi", "oi", "ban", "bạn"
+        "nha", "nhe", "nhé", "vậy", "vay", "ạ", "ơi", "oi", "ban", "bạn", "em", "toi", "tôi",
+        "khong", "không", "can", "cần", "phai", "phải", "de", "để", "nhat", "nhất"
     };
 
     public RagSearchService(IRagRepository ragRepository, ILogger<RagSearchService> logger)
@@ -69,6 +70,8 @@ public class RagSearchService : IRagSearchService
             return (diagnostics, Array.Empty<ScoredChunk>());
         }
 
+        var resolvedTopK = topK <= 0 ? 5 : Math.Min(topK, 50);
+
         var normalizedQuery = query.Trim().ToLowerInvariant();
         var unaccentedQuery = RemoveDiacritics(normalizedQuery);
         diagnostics.NormalizedQuery = unaccentedQuery;
@@ -79,18 +82,52 @@ public class RagSearchService : IRagSearchService
             .ToList();
         diagnostics.ExtractedTerms = queryTerms;
 
-        // Detect query intents
-        bool isTuitionIntent = ContainsAny(unaccentedQuery, "hoc phi", "tuition", "tien hoc", "dong tien", "nop tien", "hoc bong", "mien giam");
-        bool isFirstYearIntent = ContainsAny(unaccentedQuery, "vovinam", "nam nhat", "tieng anh", "quan su", "ren luyen", "the duc", "coursera", "dinh huong", "luk", "transition");
-        bool isFacilitiesOrSlangIntent = ContainsAny(unaccentedQuery, "hola", "hoa lac", "xavalo", "hovilo", "fuda", "xe buyt", "xe bus", "ky tuc", "ktx", "dom", "co so vat chat", "thu vien", "can tin", "san bong");
-        bool isForumIntent = ContainsAny(unaccentedQuery, "kinh nghiem", "chia se", "review", "forum", "bai viet", "cuu sinh vien", "ojt", "thuc tap");
-        bool isCurriculumIntent = ContainsAny(unaccentedQuery, "tin chi", "khung chuong trinh", "chuong trinh dao tao", "muc tieu", "chuan dau ra", "mon hoc", "chuyen nganh", "plo", "ky hoc", "hoc gi", "phan mem", "tri tue nhan tao", "an toan thong tin", "do hoa", "kinh doanh quoc te", "truyen thong", "marketing");
+        var coreSearchPhrase = ExtractCorePhrase(unaccentedQuery);
 
-        if (isTuitionIntent) diagnostics.DetectedIntents.Add("Tuition (+45)");
-        if (isFirstYearIntent) diagnostics.DetectedIntents.Add("FirstYearSubjects (+45)");
-        if (isFacilitiesOrSlangIntent) diagnostics.DetectedIntents.Add("Facilities/Slang (+40)");
+        // Detect query intents cleanly without campus-name cross-contamination
+        bool isTuitionIntent = ContainsAny(unaccentedQuery, "hoc phi", "tuition", "tien hoc", "dong tien", "nop tien", "hoc bong", "mien giam", "chi phi nhap hoc");
+        bool isFirstYearIntent = ContainsAny(unaccentedQuery,
+            "vovinam", "vo 1", "vo 2", "vo 3", "vov114", "vov124", "vov134",
+            "nam nhat", "tieng anh", "quan su", "giao duc quoc phong", "qsu", "quan khu 7",
+            "ren luyen", "the duc", "nhac cu", "dan bau", "dan nguyet", "dan ty ba",
+            "dan nhi", "dan tranh", "sao truc", "dinh huong", "luk", "transition", "placement test");
+        bool isFacilitiesIntent = ContainsAny(unaccentedQuery,
+            "co so vat chat", "ky tuc", "ktx", "dom", "thu vien", "can tin", "canteen",
+            "san bong", "xe buyt", "xe bus", "bai do xe", "gui xe", "phong gym", "khuon vien", "phong o");
+        bool isRegulationsIntent = ContainsAny(unaccentedQuery,
+            "bao luu", "tam nghi", "hoan tien do", "chuyen nganh", "chuyen co so", "chuyen combo",
+            "fap", "thi tham dinh", "coursera", "diem danh", "thoi hoc", "canh bao hoc vu",
+            "quy dinh", "qui dinh", "hoc vu", "thu tuc", "hoc lai", "thi lai", "bang diem", "hoc bong stem")
+            || Regex.IsMatch(unaccentedQuery, @"\b(bl|hl)\b");
+        bool isSlangIntent = ContainsAny(unaccentedQuery, "ten goi", "biet danh", "slang", "tai sao goi", "la gi")
+            && ContainsAny(unaccentedQuery, "hola", "xavalo", "hovilo", "fuda", "coc");
+        bool isForumIntent = ContainsAny(unaccentedQuery, "kinh nghiem", "chia se", "review", "forum", "bai viet", "cuu sinh vien", "ojt", "thuc tap");
+        bool hasExplicitCurriculumKeywords = ContainsAny(unaccentedQuery,
+            "tin chi", "khung chuong trinh", "chuong trinh dao tao", "muc tieu", "chuan dau ra",
+            "mon hoc", "chuyen nganh", "plo", "ky hoc", "hoc gi", "do an", "capstone", "dao tao");
+        bool hasMajorMention = ContainsAny(unaccentedQuery,
+            "phan mem", "tri tue nhan tao", "an toan thong tin", "do hoa", "my thuat so",
+            "kinh doanh quoc te", "truyen thong", "marketing")
+            || Regex.IsMatch(unaccentedQuery, @"\b(bit_se|bit_ai|bit_ia|bit_gd|bba_ib|bba_mc|bba_mkt|se|ia|gd|ib|mc|mkt|ktpm|attt)\b")
+            || Regex.IsMatch(query, @"\bAI\b");
+        bool hasOtherPrimaryIntent = isTuitionIntent || isFirstYearIntent || isFacilitiesIntent || isRegulationsIntent || isSlangIntent;
+        bool isCurriculumIntent = hasExplicitCurriculumKeywords || (hasMajorMention && !hasOtherPrimaryIntent);
+
+        var queryCampus = DetectCampusFromQuery(unaccentedQuery, null);
+        var filterCampus = DetectCampusFromQuery(string.Empty, campus);
+        var detectedCampus = queryCampus ?? filterCampus;
+
+        var detectedProgram = InferProgramCode(unaccentedQuery, query, programCode);
+
+        if (isTuitionIntent) diagnostics.DetectedIntents.Add("Tuition (+75)");
+        if (isFirstYearIntent) diagnostics.DetectedIntents.Add("FirstYearSubjects (+75)");
+        if (isFacilitiesIntent) diagnostics.DetectedIntents.Add("Facilities (+70)");
+        if (isRegulationsIntent) diagnostics.DetectedIntents.Add("Regulations (+70)");
+        if (isSlangIntent) diagnostics.DetectedIntents.Add("Slang/Alias (+35)");
         if (isForumIntent) diagnostics.DetectedIntents.Add("ForumPost (+35)");
-        if (isCurriculumIntent) diagnostics.DetectedIntents.Add("Curriculum (+40)");
+        if (isCurriculumIntent) diagnostics.DetectedIntents.Add("Curriculum (+65)");
+        if (!string.IsNullOrEmpty(queryCampus)) diagnostics.DetectedIntents.Add($"Campus:{queryCampus} (+30)");
+        if (!string.IsNullOrEmpty(detectedProgram)) diagnostics.DetectedIntents.Add($"Program:{detectedProgram} (+40)");
 
         var allChunks = await _ragRepository.GetAllChunksAsync(programCode, campus, cancellationToken);
         diagnostics.TotalCandidateChunks = allChunks.Count;
@@ -119,8 +156,9 @@ public class RagSearchService : IRagSearchService
             var contentFlat = RemoveDiacritics(content);
             var keywordsFlat = RemoveDiacritics(keywords);
 
-            // 1. Exact phrase matching
-            if (content.Contains(normalizedQuery) || contentFlat.Contains(unaccentedQuery))
+            // 1. Exact or core phrase matching
+            if (content.Contains(normalizedQuery) || contentFlat.Contains(unaccentedQuery) ||
+                (coreSearchPhrase.Length >= 8 && (contentFlat.Contains(coreSearchPhrase) || sectionFlat.Contains(coreSearchPhrase))))
             {
                 score += 50.0;
                 matchedIntents.Add("ExactPhrase (+50)");
@@ -129,20 +167,32 @@ public class RagSearchService : IRagSearchService
             // 2. Intent boosting
             if (isTuitionIntent && docType == "tuition")
             {
-                score += 45.0;
-                matchedIntents.Add("TuitionBoost (+45)");
+                score += 75.0;
+                matchedIntents.Add("TuitionBoost (+75)");
             }
 
-            if (isFirstYearIntent && (docType == "firstyearsubjects" || contentFlat.Contains("vovinam") || contentFlat.Contains("coursera")))
+            if (isFirstYearIntent && (docType == "firstyearsubjects" || ContainsAny(contentFlat, "vovinam", "nhac cu", "quoc phong", "qsu")))
             {
-                score += 45.0;
-                matchedIntents.Add("FirstYearBoost (+45)");
+                score += 75.0;
+                matchedIntents.Add("FirstYearBoost (+75)");
             }
 
-            if (isFacilitiesOrSlangIntent && (docType == "slang" || docType == "facilities" || contentFlat.Contains("hola") || contentFlat.Contains("xavalo")))
+            if (isFacilitiesIntent && (docType == "facilities" || ContainsAny(sectionFlat, "dormitory", "ktx", "library", "canteen", "facilities")))
             {
-                score += 40.0;
-                matchedIntents.Add("FacilitiesSlangBoost (+40)");
+                score += 70.0;
+                matchedIntents.Add("FacilitiesBoost (+70)");
+            }
+
+            if (isRegulationsIntent && (docType == "regulations" || ContainsAny(sectionFlat, "regulation", "suspension", "transfer", "fap", "coursera")))
+            {
+                score += 70.0;
+                matchedIntents.Add("RegulationsBoost (+70)");
+            }
+
+            if (isSlangIntent && (sectionFlat.Contains("biet danh") || contentFlat.Contains("ten goi khac")))
+            {
+                score += 35.0;
+                matchedIntents.Add("SlangBoost (+35)");
             }
 
             if (isForumIntent && docType == "forumpost")
@@ -153,66 +203,44 @@ public class RagSearchService : IRagSearchService
 
             if (isCurriculumIntent && docType == "curriculum")
             {
-                score += 40.0;
-                matchedIntents.Add("CurriculumBoost (+40)");
+                score += 65.0;
+                matchedIntents.Add("CurriculumBoost (+65)");
             }
 
-            // Program code boosting (using safe word-boundary checks)
-            if (!string.IsNullOrEmpty(docProgram))
+            // Program code boosting (for curriculum intent or forum posts, avoids hijacking tuition/facilities queries)
+            if (!string.IsNullOrEmpty(detectedProgram) && !string.IsNullOrEmpty(docProgram) &&
+                (isCurriculumIntent || docType == "forumpost"))
             {
-                bool programMatch = false;
-                if (Regex.IsMatch(unaccentedQuery, $@"\b{Regex.Escape(docProgram)}\b"))
+                var normalizedDocProgram = NormalizeProgramCode(docProgram);
+                if (string.Equals(normalizedDocProgram, detectedProgram, StringComparison.OrdinalIgnoreCase))
                 {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("se") && (Regex.IsMatch(unaccentedQuery, @"\b(se|ktpm)\b") || ContainsAny(unaccentedQuery, "phan mem", "software")))
-                {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("ai") && (Regex.IsMatch(unaccentedQuery, @"\b(bit_ai)\b") || ContainsAny(unaccentedQuery, "tri tue nhan tao", "artificial intelligence", "nganh ai")))
-                {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("ia") && (Regex.IsMatch(unaccentedQuery, @"\b(ia|attt)\b") || ContainsAny(unaccentedQuery, "an toan thong tin", "bao mat", "information assurance")))
-                {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("gd") && (Regex.IsMatch(unaccentedQuery, @"\bgd\b") || ContainsAny(unaccentedQuery, "do hoa", "my thuat so", "graphic design")))
-                {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("ib") && (Regex.IsMatch(unaccentedQuery, @"\bib\b") || ContainsAny(unaccentedQuery, "kinh doanh quoc te", "international business")))
-                {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("mc") && (Regex.IsMatch(unaccentedQuery, @"\bmc\b") || ContainsAny(unaccentedQuery, "truyen thong", "multimedia")))
-                {
-                    programMatch = true;
-                }
-                else if (docProgram.Contains("mkt") && (Regex.IsMatch(unaccentedQuery, @"\bmkt\b") || ContainsAny(unaccentedQuery, "marketing")))
-                {
-                    programMatch = true;
-                }
-
-                if (programMatch)
-                {
-                    score += 35.0;
-                    matchedIntents.Add($"ProgramMatch:{docProgram.ToUpperInvariant()} (+35)");
+                    score += 40.0;
+                    matchedIntents.Add($"ProgramMatch:{detectedProgram} (+40)");
                 }
             }
 
-            // 3. Keyword / Term matching (diacritics-folded for high recall)
+            // 3. Keyword / Term matching (diacritics-folded with word boundary safety for short tokens)
             foreach (var term in queryTerms)
             {
-                if (docTitleFlat.Contains(term)) score += 12.0;
-                if (sectionFlat.Contains(term)) score += 8.0;
-                if (keywordsFlat.Contains(term)) score += 6.0;
+                bool useWordBoundary = term.Length <= 3;
 
-                int matches = Regex.Matches(contentFlat, Regex.Escape(term)).Count;
+                if (ContainsTerm(docTitleFlat, term, useWordBoundary)) score += 8.0;
+                if (ContainsTerm(sectionFlat, term, useWordBoundary)) score += 6.0;
+                if (ContainsTerm(keywordsFlat, term, useWordBoundary)) score += 4.0;
+
+                var pattern = useWordBoundary ? $@"\b{Regex.Escape(term)}\b" : Regex.Escape(term);
+                int matches = Regex.Matches(contentFlat, pattern).Count;
                 if (matches > 0)
                 {
-                    score += Math.Min(matches, 5) * 3.0;
+                    score += Math.Min(matches, 3) * 2.0;
                 }
+            }
+
+            // 4. Campus section/content matching boost (applied only to chunks with existing relevance)
+            if (score > 0 && !string.IsNullOrEmpty(detectedCampus) && ChunkMatchesCampus(detectedCampus, sectionFlat, contentFlat))
+            {
+                score += 30.0;
+                matchedIntents.Add($"CampusMatch:{detectedCampus} (+30)");
             }
 
             if (score > 2.0)
@@ -228,7 +256,7 @@ public class RagSearchService : IRagSearchService
 
         var results = scoredList
             .OrderByDescending(s => s.Score)
-            .Take(topK)
+            .Take(resolvedTopK)
             .ToList();
 
         diagnostics.TopResults = results.Select(r => new ScoredChunkDetail
@@ -247,6 +275,86 @@ public class RagSearchService : IRagSearchService
             query, results.Count, results.FirstOrDefault()?.Score ?? 0);
 
         return (diagnostics, results);
+    }
+
+    private static string ExtractCorePhrase(string unaccentedQuery)
+    {
+        var cleaned = Regex.Replace(unaccentedQuery, @"[^\p{L}\p{N}\s_]", " ");
+        cleaned = Regex.Replace(cleaned, @"\b(xin|cho minh hoi|cho em hoi|cho toi hoi|cho hoi|la bao nhieu|bao nhieu|nhu the nao|the nao|la gi|co bat buoc khong|bat buoc khong|co duoc khong|o dau|khi nao|nhung gi|giup em|giup minh|ad oi|ban oi|vay|nha|nhe)\b", " ");
+        return Regex.Replace(cleaned, @"\s+", " ").Trim();
+    }
+
+    private static string? DetectCampusFromQuery(string unaccentedQuery, string? explicitCampus)
+    {
+        if (ContainsAny(unaccentedQuery, "hola", "hoa lac", "ha noi", "fu-hl", "fuhl")) return "FU-HL";
+        if (ContainsAny(unaccentedQuery, "xavalo", "ho chi minh", "sai gon", "fu-hcm", "fuhcm") || Regex.IsMatch(unaccentedQuery, @"\bhcm\b")) return "FU-HCM";
+        if (ContainsAny(unaccentedQuery, "fuda", "da nang", "fu-dn", "fudn")) return "FU-DN";
+        if (ContainsAny(unaccentedQuery, "hovilo", "can tho", "fu-ct", "fuct")) return "FU-CT";
+        if (ContainsAny(unaccentedQuery, "quy nhon", "fu-qn", "fuqn")) return "FU-QN";
+
+        if (!string.IsNullOrWhiteSpace(explicitCampus) && !explicitCampus.Equals("All", StringComparison.OrdinalIgnoreCase))
+        {
+            var c = RemoveDiacritics(explicitCampus.Trim().ToLowerInvariant());
+            if (c.Contains("hl") || c.Contains("hola") || c.Contains("hoa lac") || c.Contains("ha noi")) return "FU-HL";
+            if (c.Contains("hcm") || c.Contains("xavalo") || c.Contains("ho chi minh") || c.Contains("sai gon")) return "FU-HCM";
+            if (c.Contains("dn") || c.Contains("fuda") || c.Contains("da nang")) return "FU-DN";
+            if (c.Contains("ct") || c.Contains("hovilo") || c.Contains("can tho")) return "FU-CT";
+            if (c.Contains("qn") || c.Contains("quy nhon")) return "FU-QN";
+        }
+
+        return null;
+    }
+
+    private static string? InferProgramCode(string unaccentedQuery, string rawQuery, string? explicitProgram)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitProgram) && !explicitProgram.Equals("All", StringComparison.OrdinalIgnoreCase))
+        {
+            return NormalizeProgramCode(explicitProgram);
+        }
+
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bit_se|se|ktpm)\b") || ContainsAny(unaccentedQuery, "phan mem", "software", "ky thuat phan mem")) return "BIT_SE";
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bit_ai)\b") || Regex.IsMatch(rawQuery, @"\bAI\b") || ContainsAny(unaccentedQuery, "tri tue nhan tao", "artificial intelligence", "nganh ai", "chuyen nganh ai")) return "BIT_AI";
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bit_ia|ia|attt)\b") || ContainsAny(unaccentedQuery, "an toan thong tin", "bao mat", "information assurance")) return "BIT_IA";
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bit_gd|gd)\b") || ContainsAny(unaccentedQuery, "do hoa", "my thuat so", "thiet ke do hoa", "graphic design")) return "BIT_GD";
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bba_ib|ib)\b") || ContainsAny(unaccentedQuery, "kinh doanh quoc te", "kdqt", "international business")) return "BBA_IB";
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bba_mc|mc)\b") || ContainsAny(unaccentedQuery, "truyen thong da phuong tien", "truyen thong", "multimedia")) return "BBA_MC";
+        if (Regex.IsMatch(unaccentedQuery, @"\b(bba_mkt|mkt)\b") || ContainsAny(unaccentedQuery, "marketing", "digital marketing", "marketing so")) return "BBA_MKT";
+
+        return null;
+    }
+
+    private static string NormalizeProgramCode(string programCode)
+    {
+        var p = programCode.Trim().ToUpperInvariant();
+        if (p == "SE" || p.StartsWith("BIT_SE") || p == "KTPM") return "BIT_SE";
+        if (p == "AI" || p.StartsWith("BIT_AI")) return "BIT_AI";
+        if (p == "IA" || p.StartsWith("BIT_IA") || p == "ATTT") return "BIT_IA";
+        if (p == "GD" || p.StartsWith("BIT_GD")) return "BIT_GD";
+        if (p == "IB" || p.StartsWith("BBA_IB") || p == "KDQT") return "BBA_IB";
+        if (p == "MC" || p.StartsWith("BBA_MC")) return "BBA_MC";
+        if (p == "MKT" || p.StartsWith("BBA_MKT")) return "BBA_MKT";
+        return p;
+    }
+
+    private static bool ChunkMatchesCampus(string campusCode, string sectionFlat, string contentFlat)
+    {
+        return campusCode switch
+        {
+            "FU-HL" => ContainsAny(sectionFlat, "hola", "hoa lac", "ha noi") || ContainsAny(contentFlat, "hola", "hoa lac", "ha noi"),
+            "FU-HCM" => ContainsAny(sectionFlat, "xavalo", "hcm", "ho chi minh", "sai gon", "tp.hcm") || ContainsAny(contentFlat, "xavalo", "fu-hcm", "tp.hcm", "tphcm", "ho chi minh", "sai gon", "quan 9"),
+            "FU-DN" => ContainsAny(sectionFlat, "fuda", "da nang") || ContainsAny(contentFlat, "fuda", "da nang"),
+            "FU-CT" => ContainsAny(sectionFlat, "hovilo", "can tho") || ContainsAny(contentFlat, "hovilo", "can tho"),
+            "FU-QN" => ContainsAny(sectionFlat, "quy nhon") || ContainsAny(contentFlat, "quy nhon"),
+            _ => false
+        };
+    }
+
+    private static bool ContainsTerm(string text, string term, bool useWordBoundary)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(term)) return false;
+        return useWordBoundary
+            ? Regex.IsMatch(text, $@"\b{Regex.Escape(term)}\b")
+            : text.Contains(term, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ContainsAny(string text, params string[] needles)
