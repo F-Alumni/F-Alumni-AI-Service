@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace AiService.Repositories.Migrations
 {
     [DbContext(typeof(AiServiceDbContext))]
-    [Migration("20261112080516_AddAiDomainEntities")]
-    partial class AddAiDomainEntities
+    [Migration("20261103005740_AddAiEntities")]
+    partial class AddAiEntities
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)

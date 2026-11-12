@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace AiService.Repositories.Migrations
 {
     /// <inheritdoc />
-    public partial class AddAiDomainEntities : Migration
+    public partial class AddAiEntities : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)

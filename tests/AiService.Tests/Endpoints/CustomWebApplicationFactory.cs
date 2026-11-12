@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace AiService.Tests.Endpoints;
@@ -16,5 +16,6 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>
     {
         builder.UseSetting("DatabaseProvider", "InMemory");
         builder.UseSetting("Jwt:Key", TestJwtSecret);
+        builder.UseSetting("Kafka:Enabled", "false");
     }
 }

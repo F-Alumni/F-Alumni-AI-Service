@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using AiService.Api.Data;
 using AiService.Api.Middlewares;
 using AiService.Api.Workers;
 using AiService.Services.Extensions;
@@ -17,6 +18,18 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks();
+
+// Add CORS Policy for Web (React/Vite) & Mobile (Flutter)
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.SetIsOriginAllowed(_ => true)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
 
 // 3. Add JWT Authentication & Authorization
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -67,7 +80,7 @@ builder.Services.AddApplicationServices(builder.Configuration);
 
 // 5. Add Background RAG Ingestion Worker & Kafka Consumer
 builder.Services.AddHostedService<RagStartupWorker>();
-builder.Services.AddHostedService<ForumPostKafkaConsumerWorker>();
+builder.Services.AddHostedService<PostCreatedConsumerWorker>();
 
 var app = builder.Build();
 
@@ -79,6 +92,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.UseCors("AllowAll");
 app.UseRouting();
 
 // Authentication MUST be before Authorization
@@ -90,6 +104,9 @@ app.MapHealthChecks("/health");
 
 // Map API Controllers
 app.MapControllers();
+
+// Seed AI database with test fixtures (Mentors, RAG documents, initial conversations)
+await AiDatabaseSeeder.SeedAsync(app.Services);
 
 app.Run();
 
