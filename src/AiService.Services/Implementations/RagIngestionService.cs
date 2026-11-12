@@ -12,6 +12,7 @@ namespace AiService.Services.Implementations;
 
 public class RagIngestionService : IRagIngestionService
 {
+    private static readonly SemaphoreSlim IngestionLock = new(1, 1);
     private readonly IRagRepository _ragRepository;
     private readonly ILogger<RagIngestionService> _logger;
 
@@ -22,6 +23,19 @@ public class RagIngestionService : IRagIngestionService
     }
 
     public async Task<RagIngestionResult> IngestDocumentsFromDirectoryAsync(string directoryPath, bool forceReindex = false, CancellationToken cancellationToken = default)
+    {
+        await IngestionLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await IngestDocumentsInternalAsync(directoryPath, forceReindex, cancellationToken);
+        }
+        finally
+        {
+            IngestionLock.Release();
+        }
+    }
+
+    private async Task<RagIngestionResult> IngestDocumentsInternalAsync(string directoryPath, bool forceReindex, CancellationToken cancellationToken)
     {
         var result = new RagIngestionResult();
 

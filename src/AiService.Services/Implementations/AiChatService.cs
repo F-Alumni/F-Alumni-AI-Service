@@ -32,9 +32,15 @@ public class AiChatService : IAiChatService
         _ragSearchService = ragSearchService;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
-        _geminiApiKey = configuration["Gemini:ApiKey"]
-            ?? Environment.GetEnvironmentVariable("GEMINI_API_KEY");
-        _geminiModel = configuration["Gemini:Model"] ?? "gemini-1.5-flash";
+        var configApiKey = configuration["Gemini:ApiKey"];
+        _geminiApiKey = !string.IsNullOrWhiteSpace(configApiKey)
+            ? configApiKey
+            : Environment.GetEnvironmentVariable("GEMINI_API_KEY");
+
+        var configModel = configuration["Gemini:Model"];
+        _geminiModel = !string.IsNullOrWhiteSpace(configModel)
+            ? configModel
+            : (Environment.GetEnvironmentVariable("GEMINI_MODEL") ?? "gemini-2.5-flash");
     }
 
     public async Task<AiChatResponse> AskAsync(AiChatRequest request, Guid userId, CancellationToken cancellationToken = default)
@@ -110,14 +116,18 @@ public class AiChatService : IAiChatService
             topK: 4,
             cancellationToken);
 
-        // 3. Build citations list
-        var citations = relevantChunks.Select(rc => new CitationResponse
-        {
-            SourceTitle = rc.Chunk.Document?.Title ?? "Tài liệu FPTU",
-            Section = rc.Chunk.Section,
-            ProgramCode = rc.Chunk.Document?.ProgramCode,
-            Snippet = GetCleanSnippet(rc.Chunk.Content, 250)
-        }).ToList();
+        // 3. Build citations list (deduplicated by source title and section)
+        var citations = relevantChunks
+            .Select(rc => new CitationResponse
+            {
+                SourceTitle = rc.Chunk.Document?.Title ?? "Tài liệu FPTU",
+                Section = rc.Chunk.Section,
+                ProgramCode = rc.Chunk.Document?.ProgramCode,
+                Snippet = GetCleanSnippet(rc.Chunk.Content, 250)
+            })
+            .GroupBy(c => (c.SourceTitle, c.Section))
+            .Select(g => g.First())
+            .ToList();
 
         // 4. Generate answer: Gemini if configured, otherwise high-accuracy local synthesis
         string answer;

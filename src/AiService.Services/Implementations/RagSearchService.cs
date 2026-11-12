@@ -99,7 +99,9 @@ public class RagSearchService : IRagSearchService
             "fap", "thi tham dinh", "coursera", "diem danh", "thoi hoc", "canh bao hoc vu",
             "quy dinh", "qui dinh", "hoc vu", "thu tuc", "hoc lai", "thi lai", "bang diem", "hoc bong stem")
             || Regex.IsMatch(unaccentedQuery, @"\b(bl|hl)\b");
-        bool isSlangIntent = ContainsAny(unaccentedQuery, "ten goi", "biet danh", "slang", "tai sao goi", "la gi")
+        bool isSlangIntent = (ContainsAny(unaccentedQuery, "ten goi", "biet danh", "slang", "la gi")
+            || (unaccentedQuery.Contains("tai sao") && unaccentedQuery.Contains("goi"))
+            || unaccentedQuery.Contains("y nghia ten"))
             && ContainsAny(unaccentedQuery, "hola", "xavalo", "hovilo", "fuda", "coc");
         bool isForumIntent = ContainsAny(unaccentedQuery, "kinh nghiem", "chia se", "review", "forum", "bai viet", "cuu sinh vien", "ojt", "thuc tap");
         bool hasExplicitCurriculumKeywords = ContainsAny(unaccentedQuery,
@@ -241,6 +243,12 @@ public class RagSearchService : IRagSearchService
             {
                 score += 30.0;
                 matchedIntents.Add($"CampusMatch:{detectedCampus} (+30)");
+            }
+
+            // 5. Deprioritize pure keyword-tag chunks so substantive explanatory sections rank higher
+            if (sectionFlat.Contains("rag keywords") || sectionFlat.EndsWith("keywords"))
+            {
+                score -= 25.0;
             }
 
             if (score > 2.0)
