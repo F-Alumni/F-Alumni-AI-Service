@@ -39,10 +39,11 @@ public class RagIngestionService : IRagIngestionService
         {
             try
             {
-                var relativePath = Path.GetRelativePath(directoryPath, file);
+                var relativePath = Path.GetRelativePath(directoryPath, file).Replace('\\', '/');
                 var fileName = Path.GetFileName(file);
 
-                var existing = await _ragRepository.GetDocumentByPathAsync(file, cancellationToken);
+                var existing = await _ragRepository.GetDocumentByPathAsync(relativePath, cancellationToken)
+                    ?? await _ragRepository.GetDocumentByPathAsync(file, cancellationToken);
                 if (existing != null && !forceReindex)
                 {
                     _logger.LogDebug("Tệp {FileName} đã tồn tại trong tri thức, bỏ qua.", fileName);
@@ -51,7 +52,7 @@ public class RagIngestionService : IRagIngestionService
 
                 if (existing != null && forceReindex)
                 {
-                    await _ragRepository.DeleteDocumentByPathAsync(file, cancellationToken);
+                    await _ragRepository.DeleteDocumentByPathAsync(existing.SourcePath, cancellationToken);
                 }
 
                 var text = ExtractTextFromDocx(file);
@@ -60,13 +61,14 @@ public class RagIngestionService : IRagIngestionService
                     continue;
                 }
 
+                var docType = DetermineDocumentType(fileName, file);
                 var doc = new RagDocument
                 {
                     Title = GetDocumentTitle(fileName),
-                    SourcePath = file,
-                    DocumentType = DetermineDocumentType(fileName, file),
+                    SourcePath = relativePath,
+                    DocumentType = docType,
                     ProgramCode = DetermineProgramCode(fileName),
-                    Campus = DetermineCampus(fileName, text),
+                    Campus = DetermineCampus(docType),
                     CreatedAt = DateTime.UtcNow
                 };
 
@@ -135,10 +137,13 @@ public class RagIngestionService : IRagIngestionService
         using var reader = new StreamReader(entry.Open());
         var rawXml = reader.ReadToEnd();
 
-        // Convert <w:p> to newlines and strip remaining XML tags
-        var formatted = Regex.Replace(rawXml, @"</w:p>", "\n");
+        // Convert paragraph, row, and line-break tags to newlines and strip remaining XML tags
+        var formatted = Regex.Replace(rawXml, @"</w:p>|</w:tr>|<w:br[^>]*/?>", "\n");
         var decoded = WebUtility.HtmlDecode(Regex.Replace(formatted, @"<[^>]+>", " "));
-        return Regex.Replace(decoded, @"[ \t]+", " ").Trim();
+        var lines = decoded
+            .Split('\n')
+            .Select(l => Regex.Replace(l, @"[ \t]+", " ").Trim());
+        return string.Join("\n", lines).Trim();
     }
 
     private static List<RagChunk> ParseChunks(RagDocument doc, string text)
@@ -153,6 +158,7 @@ public class RagIngestionService : IRagIngestionService
             {
                 using var jsonDoc = JsonDocument.Parse(trimmed);
                 int index = 1;
+                var shortCode = (doc.ProgramCode ?? string.Empty).Replace("BIT_", "").Replace("BBA_", "");
                 foreach (var el in jsonDoc.RootElement.EnumerateArray())
                 {
                     var id = el.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? $"chunk_{index}" : $"chunk_{index}";
@@ -181,9 +187,9 @@ public class RagIngestionService : IRagIngestionService
                         {
                             DocumentId = doc.Id,
                             ChunkIdentifier = id,
-                            Section = section,
-                            Content = chunkText,
-                            Keywords = $"{doc.ProgramCode} {section}"
+                            Section = section.Length > 300 ? section[..300] : section,
+                            Content = chunkText.Trim(),
+                            Keywords = $"{doc.Title} {doc.ProgramCode} {shortCode} {section}".Trim()
                         });
                     }
                     index++;
@@ -200,29 +206,148 @@ public class RagIngestionService : IRagIngestionService
             }
         }
 
-        // 2. Structured text chunking by sections or paragraphs
-        var sections = Regex.Split(text, @"(?=(?:===|---|\b(?:\d+\.|[A-Z\s]{4,}:)\s))");
-        int chunkIdx = 1;
+        // 2. Structured text chunking preserving DOCUMENT and === SECTION === headers without dropping content
+        var normalized = Regex.Replace(text, @"={5,}\s*\r?\n\s*([^\r\n]+?)\s*\r?\n\s*={5,}", "\n<<<SECTION>>> $1\n");
+        normalized = Regex.Replace(normalized, @"-{5,}\s*\r?\n\s*([^\r\n]+?)\s*\r?\n\s*-{5,}", "\n<<<SUBSECTION>>> $1\n");
+        normalized = Regex.Replace(normalized, @"^[=\-]{5,}\s*$", string.Empty, RegexOptions.Multiline);
 
-        foreach (var sec in sections)
+        var subDocs = Regex.Split(normalized, @"(?=^DOCUMENT:\s*)", RegexOptions.Multiline)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToList();
+
+        if (subDocs.Count == 0)
         {
-            var content = sec.Trim();
-            if (content.Length < 40) continue;
+            subDocs.Add(normalized);
+        }
 
-            // Extract section title from first line
-            var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            var sectionTitle = lines.Length > 0 ? lines[0].Trim().Trim('=', '-', '#') : $"Phần {chunkIdx}";
-            if (sectionTitle.Length > 200) sectionTitle = sectionTitle[..200];
-
-            chunks.Add(new RagChunk
+        int chunkIdx = 1;
+        foreach (var subDoc in subDocs)
+        {
+            var subDocLines = subDoc.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string subDocTitle = string.Empty;
+            if (subDocLines.Length > 0 && subDocLines[0].StartsWith("DOCUMENT:", StringComparison.OrdinalIgnoreCase))
             {
-                DocumentId = doc.Id,
-                ChunkIdentifier = $"chunk_{chunkIdx}",
-                Section = string.IsNullOrWhiteSpace(sectionTitle) ? "Thông tin chung" : sectionTitle,
-                Content = content,
-                Keywords = $"{doc.Title} {doc.Campus} {sectionTitle}"
-            });
-            chunkIdx++;
+                subDocTitle = subDocLines[0]["DOCUMENT:".Length..].Trim();
+            }
+
+            var sections = Regex.Split(subDoc, @"(?=<<<SECTION>>>)")
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToList();
+
+            foreach (var rawSec in sections)
+            {
+                var secText = rawSec.Trim();
+                string sectionTitle = "Thông tin chung";
+
+                if (secText.StartsWith("<<<SECTION>>>", StringComparison.Ordinal))
+                {
+                    var firstNewline = secText.IndexOf('\n');
+                    if (firstNewline > 0)
+                    {
+                        sectionTitle = secText["<<<SECTION>>>".Length..firstNewline].Trim();
+                        secText = secText[(firstNewline + 1)..].Trim();
+                    }
+                    else
+                    {
+                        sectionTitle = secText["<<<SECTION>>>".Length..].Trim();
+                        secText = string.Empty;
+                    }
+                }
+                else
+                {
+                    var lines = secText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    if (lines.Length > 0)
+                    {
+                        var first = lines[0].Replace("DOCUMENT:", "").Trim();
+                        if (!string.IsNullOrWhiteSpace(first))
+                        {
+                            sectionTitle = first.Length > 150 ? first[..150] : first;
+                        }
+                    }
+                }
+
+                secText = secText.Replace("<<<SUBSECTION>>> ", string.Empty).Replace("<<<SUBSECTION>>>", string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(secText))
+                {
+                    continue;
+                }
+
+                var fullSectionLabel = !string.IsNullOrWhiteSpace(subDocTitle) && !sectionTitle.Equals(subDocTitle, StringComparison.OrdinalIgnoreCase)
+                    ? $"{subDocTitle} - {sectionTitle}"
+                    : sectionTitle;
+
+                if (fullSectionLabel.Length > 300)
+                {
+                    fullSectionLabel = fullSectionLabel[..300];
+                }
+
+                var fullContent = $"{fullSectionLabel}\n{secText}".Trim();
+
+                // If tiny orphan header/fragment (< 40 chars) and previous chunk exists in same doc, append rather than dropping
+                if (secText.Length < 25 && chunks.Count > 0)
+                {
+                    chunks[^1].Content += "\n" + fullContent;
+                    continue;
+                }
+
+                // Split very large chunks (> 2200 chars) on paragraph boundaries while keeping section header context
+                if (fullContent.Length > 2200)
+                {
+                    var paragraphs = fullContent.Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
+                    if (paragraphs.Length <= 1)
+                    {
+                        paragraphs = fullContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    }
+
+                    var buffer = new System.Text.StringBuilder();
+                    int part = 1;
+                    foreach (var p in paragraphs)
+                    {
+                        if (buffer.Length > 0 && buffer.Length + p.Length + 1 > 1800)
+                        {
+                            var partTitle = part == 1 ? fullSectionLabel : $"{fullSectionLabel} (Phần {part})";
+                            if (partTitle.Length > 300) partTitle = partTitle[..300];
+                            chunks.Add(new RagChunk
+                            {
+                                DocumentId = doc.Id,
+                                ChunkIdentifier = $"chunk_{chunkIdx++}",
+                                Section = partTitle,
+                                Content = buffer.ToString().Trim(),
+                                Keywords = $"{doc.Title} {doc.Campus} {partTitle}"
+                            });
+                            buffer.Clear();
+                            buffer.AppendLine(fullSectionLabel);
+                            part++;
+                        }
+                        buffer.AppendLine(p);
+                    }
+
+                    if (buffer.Length > 0)
+                    {
+                        var partTitle = part == 1 ? fullSectionLabel : $"{fullSectionLabel} (Phần {part})";
+                        if (partTitle.Length > 300) partTitle = partTitle[..300];
+                        chunks.Add(new RagChunk
+                        {
+                            DocumentId = doc.Id,
+                            ChunkIdentifier = $"chunk_{chunkIdx++}",
+                            Section = partTitle,
+                            Content = buffer.ToString().Trim(),
+                            Keywords = $"{doc.Title} {doc.Campus} {partTitle}"
+                        });
+                    }
+                }
+                else
+                {
+                    chunks.Add(new RagChunk
+                    {
+                        DocumentId = doc.Id,
+                        ChunkIdentifier = $"chunk_{chunkIdx++}",
+                        Section = string.IsNullOrWhiteSpace(fullSectionLabel) ? "Thông tin chung" : fullSectionLabel,
+                        Content = fullContent,
+                        Keywords = $"{doc.Title} {doc.Campus} {fullSectionLabel}"
+                    });
+                }
+            }
         }
 
         if (chunks.Count == 0 && !string.IsNullOrWhiteSpace(text))
@@ -262,7 +387,10 @@ public class RagIngestionService : IRagIngestionService
         if (fileName.Contains("vật chất", StringComparison.OrdinalIgnoreCase)) return "Facilities";
         if (fileName.Contains("năm nhất", StringComparison.OrdinalIgnoreCase)) return "FirstYearSubjects";
         if (fileName.Contains("thông tin khác", StringComparison.OrdinalIgnoreCase)) return "Slang";
-        if (fullPath.Contains("Curriculum", StringComparison.OrdinalIgnoreCase)) return "Curriculum";
+        if (fullPath.Contains("Curriculum", StringComparison.OrdinalIgnoreCase) ||
+            fileName.StartsWith("BIT_", StringComparison.OrdinalIgnoreCase) ||
+            fileName.StartsWith("BBA_", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Contains("Tổng quan", StringComparison.OrdinalIgnoreCase)) return "Curriculum";
         return "Regulations";
     }
 
@@ -278,14 +406,10 @@ public class RagIngestionService : IRagIngestionService
         return null;
     }
 
-    private static string DetermineCampus(string fileName, string text)
+    private static string DetermineCampus(string docType)
     {
-        if (text.Contains("Hola", StringComparison.OrdinalIgnoreCase) && text.Contains("Xavalo", StringComparison.OrdinalIgnoreCase)) return "All";
-        if (text.Contains("Hoa Lac", StringComparison.OrdinalIgnoreCase) || text.Contains("Hola", StringComparison.OrdinalIgnoreCase)) return "FU-HL";
-        if (text.Contains("Xavalo", StringComparison.OrdinalIgnoreCase) || text.Contains("Ho Chi Minh", StringComparison.OrdinalIgnoreCase)) return "FU-HCM";
-        if (text.Contains("Da Nang", StringComparison.OrdinalIgnoreCase)) return "FU-DN";
-        if (text.Contains("Can Tho", StringComparison.OrdinalIgnoreCase)) return "FU-CT";
-        if (text.Contains("Quy Nhon", StringComparison.OrdinalIgnoreCase)) return "FU-QN";
+        // All institutional files (curriculums, first-year subjects, tuition, facilities, regulations)
+        // apply university-wide or cover multiple campuses inside their chunk content.
         return "All";
     }
 

@@ -43,15 +43,47 @@ public class RagRepository : IRagRepository
 
         if (!string.IsNullOrWhiteSpace(programCode) && !programCode.Equals("All", StringComparison.OrdinalIgnoreCase))
         {
-            query = query.Where(c => c.Document!.ProgramCode == programCode || c.Document.ProgramCode == null);
+            var upper = programCode.Trim().ToUpperInvariant();
+            var shortCode = upper.Replace("BIT_", "").Replace("BBA_", "");
+            var fullBitCode = $"BIT_{shortCode}";
+            var fullBbaCode = $"BBA_{shortCode}";
+
+            query = query.Where(c =>
+                c.Document!.ProgramCode == null ||
+                c.Document.ProgramCode == programCode ||
+                c.Document.ProgramCode == upper ||
+                c.Document.ProgramCode == shortCode ||
+                c.Document.ProgramCode == fullBitCode ||
+                c.Document.ProgramCode == fullBbaCode);
         }
 
         if (!string.IsNullOrWhiteSpace(campus) && !campus.Equals("All", StringComparison.OrdinalIgnoreCase))
         {
-            query = query.Where(c => c.Document!.Campus == campus || c.Document.Campus == "All");
+            var normalizedCampus = NormalizeCampusCode(campus);
+            query = query.Where(c =>
+                c.Document!.Campus == "All" ||
+                c.Document.Campus == null ||
+                c.Document.Campus == campus ||
+                c.Document.Campus == normalizedCampus);
         }
 
         return await query.ToListAsync(cancellationToken);
+    }
+
+    private static string NormalizeCampusCode(string campus)
+    {
+        var c = campus.Trim().ToLowerInvariant();
+        if (c.Contains("hl") || c.Contains("hola") || c.Contains("hoa lac") || c.Contains("hòa lạc") || c.Contains("hà nội") || c.Contains("ha noi"))
+            return "FU-HL";
+        if (c.Contains("hcm") || c.Contains("xavalo") || c.Contains("ho chi minh") || c.Contains("hồ chí minh") || c.Contains("sài gòn"))
+            return "FU-HCM";
+        if (c.Contains("dn") || c.Contains("fuda") || c.Contains("da nang") || c.Contains("đà nẵng"))
+            return "FU-DN";
+        if (c.Contains("ct") || c.Contains("hovilo") || c.Contains("can tho") || c.Contains("cần thơ"))
+            return "FU-CT";
+        if (c.Contains("qn") || c.Contains("quy nhon") || c.Contains("quy nhơn"))
+            return "FU-QN";
+        return campus.Trim();
     }
 
     public async Task<int> GetDocumentCountAsync(CancellationToken cancellationToken = default)

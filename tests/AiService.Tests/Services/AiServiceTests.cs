@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using AiService.Repositories.Entities;
@@ -270,6 +271,63 @@ public class AiServiceTests
         // Test query about first year subjects Vovinam
         var vovinamResults = await searchService.SearchRelevantChunksAsync("Môn Vovinam có bắt buộc không?");
         Assert.NotEmpty(vovinamResults);
+
+        // Verify all 12 docx files are ingested with Campus = "All" and zero massive drop
+        Assert.Equal(12, result.TotalFilesProcessed);
+        Assert.All(repo.Documents, d => Assert.Equal("All", d.Campus));
+
+        // Unaccented query matching (diacritic-insensitive)
+        var unaccentedTuition = await searchService.SearchRelevantChunksAsync("hoc phi tai hola bao nhieu");
+        Assert.NotEmpty(unaccentedTuition);
+        Assert.Equal("Tuition", unaccentedTuition[0].Chunk.Document?.DocumentType);
+
+        // Intent Boosting diagnostics (/boost)
+        var boostResult = await searchService.TestBoostAsync("Cho mình hỏi học phí tại Hola?");
+        Assert.Contains(boostResult.DetectedIntents, i => i.StartsWith("Tuition"));
+        Assert.NotEmpty(boostResult.TopResults);
+        Assert.Equal("Tuition", boostResult.TopResults[0].DocumentType);
+        Assert.True(boostResult.TopResults[0].Score >= 45.0);
+    }
+
+    [Fact]
+    public async Task RagRepository_Filters_ShortMajor_And_Campus_Accurately()
+    {
+        var options = new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<AiService.Repositories.Context.AiServiceDbContext>()
+            .UseInMemoryDatabase("RagRepoFilterTest_" + Guid.NewGuid())
+            .Options;
+
+        await using var db = new AiService.Repositories.Context.AiServiceDbContext(options);
+        var repo = new AiService.Repositories.Implementations.RagRepository(db);
+
+        var seDoc = new RagDocument
+        {
+            Title = "Khung chương trình SE",
+            SourcePath = "Curriculumm/BIT_SE_K19B.docx",
+            DocumentType = "Curriculum",
+            ProgramCode = "BIT_SE",
+            Campus = "All"
+        };
+        var tuitionDoc = new RagDocument
+        {
+            Title = "Học phí FPTU",
+            SourcePath = "Học phí.docx",
+            DocumentType = "Tuition",
+            ProgramCode = null,
+            Campus = "All"
+        };
+        await repo.AddDocumentAsync(seDoc);
+        await repo.AddDocumentAsync(tuitionDoc);
+        await repo.AddChunksAsync(new[]
+        {
+            new RagChunk { DocumentId = seDoc.Id, ChunkIdentifier = "c1", Section = "SE", Content = "Kỹ thuật phần mềm 145 tín chỉ", Keywords = "SE" },
+            new RagChunk { DocumentId = tuitionDoc.Id, ChunkIdentifier = "c2", Section = "Tuition", Content = "Học phí 28.7 triệu", Keywords = "học phí" }
+        });
+
+        // Querying with short code "SE" and "Hola" MUST include both BIT_SE and general docs (ProgramCode == null)
+        var chunks = await repo.GetAllChunksAsync("SE", "Hola");
+        Assert.Equal(2, chunks.Count);
+        Assert.Contains(chunks, c => c.Document!.ProgramCode == "BIT_SE");
+        Assert.Contains(chunks, c => c.Document!.ProgramCode == null);
     }
 }
 

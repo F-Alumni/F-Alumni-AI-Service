@@ -57,10 +57,42 @@ public class AiChatService : IAiChatService
             }, cancellationToken);
         }
 
+        // Multi-turn context resolution: Inherit major & topic if follow-up question is anaphoric
+        var resolvedMajor = request.Major;
+        var enrichedQuery = request.Question;
+
+        if (conversation.Messages.Count > 0)
+        {
+            var lastUserMsg = conversation.Messages.LastOrDefault(m => m.Role == "user");
+            if (lastUserMsg != null)
+            {
+                if ((string.IsNullOrWhiteSpace(resolvedMajor) || resolvedMajor.Equals("All", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var inferred = InferMajorFromText(lastUserMsg.Content);
+                    if (!string.IsNullOrEmpty(inferred))
+                    {
+                        resolvedMajor = inferred;
+                    }
+                }
+
+                // If follow-up question refers back to previous topic
+                var qLower = request.Question.ToLowerInvariant();
+                if (qLower.Contains("ngành này") || qLower.Contains("nganh nay") ||
+                    qLower.Contains("môn này") || qLower.Contains("mon nay") ||
+                    qLower.Contains("thế còn") || qLower.Contains("the con") ||
+                    qLower.Contains("vậy còn") || qLower.Contains("vay con") ||
+                    qLower.Contains("ở đâu") || qLower.Contains("o dau") ||
+                    qLower.Contains("mấy tín") || qLower.Contains("bao nhiêu tín"))
+                {
+                    enrichedQuery = $"{request.Question} {lastUserMsg.Content}";
+                }
+            }
+        }
+
         // 2. Retrieve relevant context chunks via RAG engine
         var relevantChunks = await _ragSearchService.SearchRelevantChunksAsync(
-            request.Question,
-            request.Major,
+            enrichedQuery,
+            resolvedMajor,
             request.Campus,
             topK: 4,
             cancellationToken);
@@ -112,6 +144,19 @@ public class AiChatService : IAiChatService
             Citations = citations,
             CreatedAt = DateTime.UtcNow
         };
+    }
+
+    private static string? InferMajorFromText(string text)
+    {
+        var t = text.ToLowerInvariant();
+        if (t.Contains("se") || t.Contains("phần mềm") || t.Contains("software")) return "BIT_SE";
+        if (t.Contains("ai") || t.Contains("trí tuệ nhân tạo")) return "BIT_AI";
+        if (t.Contains("ia") || t.Contains("an toàn thông tin") || t.Contains("bảo mật")) return "BIT_IA";
+        if (t.Contains("gd") || t.Contains("đồ họa") || t.Contains("mỹ thuật số")) return "BIT_GD";
+        if (t.Contains("ib") || t.Contains("kinh doanh quốc tế")) return "BBA_IB";
+        if (t.Contains("mc") || t.Contains("truyền thông")) return "BBA_MC";
+        if (t.Contains("mkt") || t.Contains("marketing")) return "BBA_MKT";
+        return null;
     }
 
     public async Task<AiConversationResponse> GetConversationHistoryAsync(Guid conversationId, Guid userId, CancellationToken cancellationToken = default)
@@ -179,24 +224,33 @@ public class AiChatService : IAiChatService
                 "3. Nêu rõ các số liệu cụ thể (học phí, tín chỉ, mã môn, quy định) nếu có. " +
                 "4. Cuối câu trả lời, hãy chỉ rõ nguồn tham khảo đã trích dẫn.";
 
-            var promptText = $"{systemInstruction}\n\n{sbContext}\n\nCÂU HỎI CỦA NGƯỜI DÙNG: {question}";
+            var currentPrompt = $"{systemInstruction}\n\n{sbContext}\n\nCÂU HỎI HIỆN TẠI CỦA NGƯỜI DÙNG: {question}";
+
+            // Multi-turn conversation contents array
+            var contentsList = new List<object>();
+            var recentHistory = history.TakeLast(6).ToList();
+            foreach (var h in recentHistory)
+            {
+                contentsList.Add(new
+                {
+                    role = h.Role == "assistant" ? "model" : "user",
+                    parts = new[] { new { text = h.Content } }
+                });
+            }
+
+            contentsList.Add(new
+            {
+                role = "user",
+                parts = new[] { new { text = currentPrompt } }
+            });
 
             var requestBody = new
             {
-                contents = new[]
-                {
-                    new
-                    {
-                        parts = new[]
-                        {
-                            new { text = promptText }
-                        }
-                    }
-                },
+                contents = contentsList,
                 generationConfig = new
                 {
                     temperature = 0.2,
-                    maxOutputTokens = 800
+                    maxOutputTokens = 1200
                 }
             };
 
@@ -249,9 +303,9 @@ public class AiChatService : IAiChatService
         sb.AppendLine($"Dựa trên tài liệu quy chuẩn của Đại học FPT (**{primaryChunk.Document?.Title ?? "FPTU Documents"}** - *{primaryChunk.Section}*), thông tin cụ thể như sau:\n");
 
         var cleanContent = primaryChunk.Content.Trim();
-        if (cleanContent.Length > 700)
+        if (cleanContent.Length > 2000)
         {
-            cleanContent = cleanContent[..700] + "...";
+            cleanContent = cleanContent[..2000] + "...";
         }
 
         sb.AppendLine(cleanContent);
@@ -260,10 +314,10 @@ public class AiChatService : IAiChatService
         if (chunks.Count > 1)
         {
             sb.AppendLine("**Các thông tin bổ trợ liên quan:**");
-            for (int i = 1; i < Math.Min(chunks.Count, 3); i++)
+            for (int i = 1; i < Math.Min(chunks.Count, 4); i++)
             {
                 var extra = chunks[i].Chunk;
-                var shortSnippet = GetCleanSnippet(extra.Content, 180);
+                var shortSnippet = GetCleanSnippet(extra.Content, 220);
                 sb.AppendLine($"- **{extra.Document?.Title}** (*{extra.Section}*): {shortSnippet}");
             }
         }
